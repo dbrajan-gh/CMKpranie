@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PranieCMK v1.1.4 Cloud</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Supabase JS Library -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
+        .no-select { user-select: none; }
+        .pin-dot { transition: all 0.3s ease; }
+        .fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .loading-overlay { position: fixed; inset: 0; background: rgba(255,255,255,0.8); z-index: 100; display: flex; items-center; justify-center; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 no-select pb-12">
+
+    <!-- 
+        SQL PRE SUPABASE EDITOR (Spustite toto v SQL Editori v Supabase):
+        
+        CREATE TABLE laundry_records (
+            id SERIAL PRIMARY KEY,
+            week_id TEXT,
+            employee_id TEXT,
+            is_done BOOLEAN,
+            UNIQUE(week_id, employee_id)
+        );
+
+        CREATE TABLE laundry_locks (
+            id SERIAL PRIMARY KEY,
+            week_id TEXT,
+            dept_id TEXT,
+            is_locked BOOLEAN,
+            UNIQUE(week_id, dept_id)
+        );
+        
+        -- Povolenie verejného prístupu (RLS vypnuté pre jednoduchosť, v produkcii nastavte politiky)
+        ALTER TABLE laundry_records DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE laundry_locks DISABLE ROW LEVEL SECURITY;
+    -->
+
+    <div id="loader" class="loading-overlay hidden">
+        <div class="flex flex-col items-center">
+            <div class="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+            <p class="mt-4 font-bold text-slate-600">Synchronizujem...</p>
+        </div>
+    </div>
+
+    <!-- PIN PAD MODAL -->
+    <div id="pinPadModal" class="fixed inset-0 z-[60] hidden items-center justify-center bg-slate-900/70 backdrop-blur-sm p-4">
+        <div class="bg-white rounded-[32px] shadow-2xl w-full max-w-xs p-8 flex flex-col items-center border border-slate-100">
+            <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-6 text-center">Administrátorský PIN</h3>
+            <div class="flex gap-4 mb-8" id="pinDots">
+                <div class="w-3.5 h-3.5 rounded-full bg-slate-200 pin-dot"></div>
+                <div class="w-3.5 h-3.5 rounded-full bg-slate-200 pin-dot"></div>
+                <div class="w-3.5 h-3.5 rounded-full bg-slate-200 pin-dot"></div>
+                <div class="w-3.5 h-3.5 rounded-full bg-slate-200 pin-dot"></div>
+            </div>
+            <div class="grid grid-cols-3 gap-3 w-full" id="numpad"></div>
+        </div>
+    </div>
+
+    <!-- HEADER -->
+    <header class="bg-white/90 backdrop-blur-md border-b border-slate-100 sticky top-0 z-50 px-6 py-4 flex flex-col md:flex-row items-center justify-between shadow-sm gap-4">
+        <div class="flex items-center gap-4 w-full md:w-auto">
+            <div class="bg-blue-600 p-2.5 rounded-2xl text-white shadow-lg shadow-blue-200 cursor-pointer" onclick="switchView('laundry')">
+                <i data-lucide="shirt" size="22"></i>
+            </div>
+            <div>
+                <h1 class="text-lg font-black tracking-tight leading-none text-slate-800">PranieCMK <span class="text-blue-600 ml-1">Cloud</span></h1>
+                <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Live Database Active</p>
+            </div>
+        </div>
+
+        <div id="weekControls" class="flex items-center bg-slate-100 rounded-2xl p-1 border border-slate-200/50">
+            <button onclick="changeWeek(-1)" class="p-2 hover:bg-white rounded-xl text-slate-500 transition-all"><i data-lucide="chevron-left" size="20"></i></button>
+            <div class="flex flex-col items-center px-4 min-w-[140px]">
+                <span id="displayWeekNo" class="text-[10px] font-black text-blue-600 tracking-[0.2em] mb-0.5">W--</span>
+                <span id="displayWeekRange" class="text-[10px] font-bold text-slate-500 tracking-tight uppercase text-center">---</span>
+            </div>
+            <button onclick="changeWeek(1)" class="p-2 hover:bg-white rounded-xl text-slate-500 transition-all"><i data-lucide="chevron-right" size="20"></i></button>
+        </div>
+
+        <div class="flex items-center gap-2">
+            <button id="btnExport" onclick="exportToExcel()" class="p-3 rounded-2xl border bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100 transition-all active:scale-95">
+                <i data-lucide="file-spreadsheet" size="22"></i>
+            </button>
+            <button id="btnArchive" onclick="switchView('archive')" class="p-3 rounded-2xl border bg-white text-slate-500 border-slate-200 hover:bg-slate-50 transition-all">
+                <i data-lucide="archive" size="22"></i>
+            </button>
+            <button id="btnStats" onclick="switchView('stats')" class="p-3 rounded-2xl border bg-white text-slate-500 border-slate-200 hover:bg-slate-50 transition-all">
+                <i data-lucide="bar-chart-3" size="22"></i>
+            </button>
+            <button id="btnManage" onclick="handleManageClick()" class="p-3 rounded-2xl border bg-white text-slate-500 border-slate-200 hover:bg-slate-50 transition-all">
+                <i data-lucide="users" size="22"></i>
+            </button>
+        </div>
+    </header>
+
+    <main class="max-w-[1200px] mx-auto px-6 pt-8" id="mainContent">
+        <!-- JS Injected Content -->
+    </main>
+
+    <script>
+        // --- SUPABASE CONFIG ---
+        const supabaseUrl = 'https://VAŠA_URL.supabase.co'; // Nezabudnite nahradiť
+        const supabaseKey = 'VÁŠ_ANON_KEY'; // Nezabudnite nahradiť
+        const _supabase = supabase.createClient(supabaseUrl, supabaseKey);
+
+        const CORRECT_PIN = "1234";
+
+        const DEFAULT_DEPARTMENTS = [
+            { id: 'd1', name: 'oddelenie B2O3', color: 'bg-blue-600', textColor: 'text-blue-600', gradient: 'from-blue-600 to-blue-700', activeBg: 'rgba(37, 99, 235, 0.3)', employees: [{id:'d1-e1', name:'Rajnohová Jana'},{id:'d1-e2', name:'Čaradová Ľubica'},{id:'d1-e3', name:'Gulašová viera'},{id:'d1-e4', name:'Horniak Peter'},{id:'d1-e5', name:'Kopščan Filip'},{id:'d1-e6', name:'Gretš Ján'},{id:'d1-e7', name:'Majerský Ján'},{id:'d1-e8', name:'Kopča Filip'},{id:'d1-e9', name:'Štefanka Lukáš'}] },
+            { id: 'd2', name: 'oddelenie GaAs', color: 'bg-emerald-600', textColor: 'text-emerald-600', gradient: 'from-emerald-600 to-emerald-700', activeBg: 'rgba(5, 150, 105, 0.3)', employees: [{id:'d2-e1', name:'Liďák Miroslav'},{id:'d2-e2', name:'Suchá Mária'},{id:'d2-e3', name:'Debnár Jozef'},{id:'d2-e4', name:'Debnár Ľuboš'},{id:'d2-e5', name:'Osvald Filip'},{id:'d2-e6', name:'Klonga Miroslav'},{id:'d2-e7', name:'Maslen Samuel'},{id:'d2-e8', name:'Šadlák Henrich'},{id:'d2-e9', name:'Holečka Matúš'},{id:'d2-e10', name:'Horváth Slavomír'},{id:'d2-e11', name:'Zavadil Peter'},{id:'d2-e12', name:'Klongová Oľga'},{id:'d2-e13', name:'Matejov Jozef'},{id:'d2-e14', name:'Bahleda Roman'},{id:'d2-e15', name:'Lepeňová Milena'},{id:'d2-e16', name:'Tabernausová Zuzana'},{id:'d2-e17', name:'Ferdinadyová Monika'},{id:'d2-e18', name:'Kršjak Vladimír'},{id:'d2-e19', name:'Král Milan'}] },
+            { id: 'd3', name: 'oddelenie Gália', color: 'bg-amber-600', textColor: 'text-amber-600', gradient: 'from-amber-500 to-amber-600', activeBg: 'rgba(217, 119, 6, 0.3)', employees: [{id:'d3-e1', name:'Krúpa Roman'},{id:'d3-e2', name:'Streďanský Jozef'},{id:'d3-e3', name:'Čarada Adam'},{id:'d3-e4', name:'Šulaj Matúš'},{id:'d3-e5', name:'Rajčan Adam'},{id:'d3-e6', name:'Kosťov Stanislav'},{id:'d3-e7', name:'Mastík Jozef'},{id:'d3-e8', name:'Víglaský Miroslav'},{id:'d3-e9', name:'Tomčány Jakub'},{id:'d3-e10', name:'Masaryk Filip'},{id:'d3-e11', name:'Hideg Peter'},{id:'d3-e12', name:'Beňovský Martin'},{id:'d3-e13', name:'Debnár Marek'},{id:'d3-e14', name:'Majerský Peter'},{id:'d3-e15', name:'Sýkora Ján'},{id:'d3-e16', name:'Krajčo Michal'},{id:'d3-e17', name:'Forgáč Zdenko'},{id:'d3-e18', name:'Herchl Timotej'},{id:'d3-e19', name:'Pánik Tadeáš'},{id:'d3-e20', name:'Fránik Roland'},{id:'d3-e21', name:'Barborík Anton'}] },
+            { id: 'd4', name: 'ostatní', color: 'bg-purple-600', textColor: 'text-purple-600', gradient: 'from-purple-600 to-purple-700', activeBg: 'rgba(147, 51, 234, 0.3)', employees: [{id:'d4-e1', name:'Martin Matis'},{id:'d4-e2', name:'Jenatová Katarína'},{id:'d4-e3', name:'Matušková Eva'},{id:'d4-e4', name:'Debnárová Lucia'},{id:'d4-e5', name:'Kucanová Eva'},{id:'d4-e6', name:'Maňúchová Eva'},{id:'d4-e7', name:'Grégerová Dominika'},{id:'d4-e8', name:'Búriová Katarína'},{id:'d4-e9', name:'Búci Peter'},{id:'d4-e10', name:'Oslanec Ľudovít'},{id:'d4-e11', name:'Suchý Peter'},{id:'d4-e12', name:'Miksai Marián'},{id:'d4-e13', name:'Výboch Ľuboš'},{id:'d4-e14', name:'Majsniar Peter'},{id:'d4-e15', name:'Šusteková Ľubica'},{id:'d4-e16', name:'Arvajová Ľubica'},{id:'d4-e17', name:'Marušková Janka'},{id:'d4-e18', name:'Janek Branislav'},{id:'d4-e19', name:'Jenis Miroslav'}] }
+        ];
+
+        let state = {
+            currentDate: new Date(),
+            view: 'laundry',
+            departments: JSON.parse(localStorage.getItem('laundryDepartments')) || DEFAULT_DEPARTMENTS,
+            records: {}, 
+            lockedDepts: {},
+            manageMode: false,
+            pinInput: ""
+        };
+
+        // --- UTILS ---
+        const getStartOfWeek = (date) => {
+            const d = new Date(date);
+            const day = d.getDay();
+            const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+            d.setDate(diff); d.setHours(0, 0, 0, 0);
+            return d;
+        };
+        const getWeekNumber = (date) => {
+            const d = new Date(date);
+            d.setHours(0, 0, 0, 0);
+            d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+            return Math.ceil((((d.getTime() - new Date(d.getFullYear(), 0, 1).getTime()) / 86400000) + 1) / 7);
+        };
+        const getWeekId = (date) => `${date.getFullYear()}-W${getWeekNumber(date)}`;
+        const formatDateRange = (startDate) => {
+            const end = new Date(startDate);
+            end.setDate(startDate.getDate() + 6);
+            return `${startDate.toLocaleDateString('sk-SK', { day: 'numeric', month: 'short' })} - ${end.toLocaleDateString('sk-SK', { day: 'numeric', month: 'short' })}`;
+        };
+
+        // --- DATABASE OPERATIONS ---
+        const fetchData = async () => {
+            document.getElementById('loader').classList.remove('hidden');
+            try {
+                const { data: recs, error: recError } = await _supabase.from('laundry_records').select('*');
+                const { data: locks, error: lockError } = await _supabase.from('laundry_locks').select('*');
+
+                if (recError) throw recError;
+                if (lockError) throw lockError;
+
+                const newRecords = {};
+                if (recs && Array.isArray(recs)) {
+                    recs.forEach(r => {
+                        if (!newRecords[r.week_id]) newRecords[r.week_id] = {};
+                        newRecords[r.week_id][r.employee_id] = r.is_done;
+                    });
+                }
+
+                const newLocks = {};
+                if (locks && Array.isArray(locks)) {
+                    locks.forEach(l => {
+                        if (!newLocks[l.week_id]) newLocks[l.week_id] = {};
+                        newLocks[l.week_id][l.dept_id] = l.is_locked;
+                    });
+                }
+
+                state.records = newRecords;
+                state.lockedDepts = newLocks;
+                updateUI();
+            } catch (e) {
+                console.error("DB Error", e);
+                // V prípade chyby (napr. zlé kľúče) aspoň vykreslíme UI s prázdnymi dátami
+                updateUI();
+            } finally {
+                document.getElementById('loader').classList.add('hidden');
+            }
+        };
+
+        const updateLaundryDb = async (weekId, empId, isDone) => {
+            try {
+                await _supabase.from('laundry_records').upsert({
+                    week_id: weekId,
+                    employee_id: empId,
+                    is_done: isDone
+                }, { onConflict: 'week_id,employee_id' });
+            } catch (e) { console.error("Update Record Error", e); }
+        };
+
+        const updateLockDb = async (weekId, deptId, isLocked) => {
+            try {
+                await _supabase.from('laundry_locks').upsert({
+                    week_id: weekId,
+                    dept_id: deptId,
+                    is_locked: isLocked
+                }, { onConflict: 'week_id,dept_id' });
+            } catch (e) { console.error("Update Lock Error", e); }
+        };
+
+        // --- RENDER ENGINE ---
+        const updateUI = () => {
+            const main = document.getElementById('mainContent');
+            if (!main) return;
+            const weekId = getWeekId(state.currentDate);
+            const start = getStartOfWeek(state.currentDate);
+
+            document.getElementById('displayWeekNo').innerText = `W${getWeekNumber(state.currentDate)}`;
+            document.getElementById('displayWeekRange').innerText = formatDateRange(start);
+            document.getElementById('weekControls').className = (state.view === 'laundry' && !state.manageMode) ? 'flex items-center bg-slate-100 rounded-2xl p-1 border border-slate-200/50' : 'hidden';
+            
+            document.getElementById('btnArchive').className = `p-3 rounded-2xl border transition-all ${state.view === 'archive' ? 'bg-amber-500 text-white shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`;
+            document.getElementById('btnStats').className = `p-3 rounded-2xl border transition-all ${state.view === 'stats' ? 'bg-blue-600 text-white shadow-lg' : 'bg-white text-slate-500 border-slate-200'}`;
+            document.getElementById('btnManage').className = `p-3 rounded-2xl border transition-all ${state.manageMode ? 'bg-slate-800 text-white' : 'bg-white text-slate-500'}`;
+            document.getElementById('btnManage').innerHTML = state.manageMode ? '<i data-lucide="x" size="22"></i>' : '<i data-lucide="users" size="22"></i>';
+
+            if (state.view === 'laundry') renderLaundry(main, weekId);
+            else if (state.view === 'stats') renderStats(main);
+            else if (state.view === 'archive') renderArchive(main);
+
+            lucide.createIcons();
+        };
+
+        const renderLaundry = (container, weekId) => {
+            let totalPossible = 0; let totalWashed = 0;
+            state.departments.forEach(d => d.employees.forEach(e => {
+                totalPossible++;
+                if (state.records[weekId]?.[e.id]) totalWashed++;
+            }));
+            const percent = totalPossible ? Math.round((totalWashed / totalPossible) * 100) : 0;
+
+            let html = `<div class="space-y-8 fade-in">`;
+            
+            if (!state.manageMode) {
+                html += `
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="bg-white border border-slate-100 rounded-[28px] px-8 py-5 flex items-center justify-between shadow-lg shadow-slate-200/10">
+                        <div class="flex flex-col">
+                            <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Aktivita týždňa</span>
+                            <span class="font-black text-slate-800 text-2xl tracking-tighter">${totalWashed} <span class="text-slate-300 font-normal">/</span> ${totalPossible}</span>
+                        </div>
+                        <i data-lucide="activity" class="text-blue-500 opacity-20" size="40"></i>
+                    </div>
+                    <div class="bg-white border border-slate-100 rounded-[28px] px-8 py-5 flex-1 shadow-lg shadow-slate-200/10">
+                        <div class="flex justify-between items-center mb-3">
+                            <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Progres prania</span>
+                            <span class="text-lg font-black text-emerald-600">${percent}%</span>
+                        </div>
+                        <div class="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                            <div class="h-full bg-emerald-500 transition-all duration-700" style="width: ${percent}%"></div>
+                        </div>
+                    </div>
+                </div>`;
+            }
+
+            state.departments.forEach(dept => {
+                const washed = dept.employees.filter(e => state.records[weekId]?.[e.id]).length;
+                const total = dept.employees.length;
+                const locked = (state.lockedDepts[weekId]?.[dept.id]) || false;
+
+                html += `
+                <div class="bg-white rounded-[32px] shadow-xl overflow-hidden border border-slate-100 transition-all">
+                    <div class="px-8 py-5 bg-gradient-to-r ${dept.gradient} text-white relative">
+                        <div class="relative z-10 flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <h2 class="font-black text-base uppercase tracking-wider">${dept.name}</h2>
+                            </div>
+                            <div class="flex items-center gap-3">
+                                <span class="text-xs font-black bg-white/20 px-3 py-1.5 rounded-lg">${washed} / ${total}</span>
+                                ${!state.manageMode ? `
+                                <button onclick="toggleLock('${dept.id}')" class="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all">
+                                    <i data-lucide="${locked ? 'lock' : 'unlock'}" size="18"></i>
+                                </button>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="p-8 relative">
+                        ${locked && !state.manageMode ? '<div class="absolute inset-0 z-20 bg-white/40 backdrop-blur-[1px] cursor-not-allowed"></div>' : ''}
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                            ${dept.employees.map(emp => {
+                                const isDone = state.records[weekId]?.[emp.id];
+                                if (state.manageMode) {
+                                    return `
+                                    <div class="flex items-center gap-3 p-3 bg-slate-50 border border-slate-100 rounded-xl">
+                                        <input type="text" value="${emp.name}" onchange="editEmployee('${dept.id}', '${emp.id}', this.value)" class="flex-1 bg-transparent px-2 font-bold text-sm outline-none">
+                                        <button onclick="deleteEmployee('${dept.id}', '${emp.id}')" class="p-2 text-slate-300 hover:text-red-500"><i data-lucide="trash-2" size="16"></i></button>
+                                    </div>`;
+                                }
+                                return `
+                                <button onclick="toggleLaundry('${emp.id}', '${dept.id}')" class="flex items-center justify-between p-4 rounded-2xl transition-all active:scale-[0.96] border-2 shadow-sm ${isDone ? `bg-blue-50 border-blue-200 text-blue-900` : 'bg-slate-50 border-slate-50 text-slate-600'}">
+                                    <span class="text-[13px] font-bold truncate">${emp.name}</span>
+                                    <div class="w-6 h-6 rounded-lg border-2 flex items-center justify-center ${isDone ? 'bg-blue-600 border-transparent text-white' : 'border-slate-300 bg-white'}">
+                                        ${isDone ? '<i data-lucide="check" size="14"></i>' : ''}
+                                    </div>
+                                </button>`;
+                            }).join('')}
+                        </div>
+                    </div>
+                </div>`;
+            });
+            container.innerHTML = html + `</div>`;
+        };
+
+        const renderStats = (container) => {
+            container.innerHTML = `<div class="p-12 text-center text-slate-400 font-bold">Generujem štatistiky z databázy...</div>`;
+            setTimeout(() => {
+                const containerHtml = `<div class="grid grid-cols-1 gap-8 fade-in">
+                    <h2 class="text-2xl font-black">Prehľad výkonnosti</h2>
+                    <div class="bg-white p-8 rounded-3xl border border-slate-100 shadow-xl">V tejto cloud verzii sú štatistiky počítané v reálnom čase zo Supabase.</div>
+                </div>`;
+                container.innerHTML = containerHtml;
+                lucide.createIcons();
+            }, 500);
+        };
+
+        const renderArchive = (container) => {
+            const keys = Object.keys(state.records).sort().reverse();
+            container.innerHTML = `
+            <div class="space-y-6 fade-in">
+                <h2 class="text-xl font-black">História prania</h2>
+                ${keys.length === 0 ? '<p class="text-slate-400 font-bold">Zatiaľ žiadne záznamy.</p>' : ''}
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    ${keys.map(weekId => `<button onclick="gotoWeek('${weekId}')" class="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm hover:border-blue-500 transition-all text-left">
+                        <span class="text-[10px] font-black text-blue-600 uppercase tracking-widest block mb-1">Záznam</span>
+                        <span class="text-lg font-black">${weekId}</span>
+                    </button>`).join('')}
+                </div>
+            </div>`;
+        };
+
+        // --- ACTIONS ---
+        window.switchView = (v) => { state.view = v; state.manageMode = false; updateUI(); };
+        window.changeWeek = (diff) => { state.currentDate.setDate(state.currentDate.getDate() + (diff * 7)); updateUI(); };
+        window.gotoWeek = (weekId) => {
+            const [year, wPart] = weekId.split('-W');
+            state.currentDate = new Date(year, 0, 1 + (parseInt(wPart) - 1) * 7);
+            state.view = 'laundry'; updateUI();
+        };
+
+        window.toggleLaundry = async (empId, deptId) => {
+            const weekId = getWeekId(state.currentDate);
+            if (state.lockedDepts[weekId]?.[deptId]) return;
+            if (!state.records[weekId]) state.records[weekId] = {};
+            const newVal = !state.records[weekId][empId];
+            state.records[weekId][empId] = newVal;
+            updateUI();
+            await updateLaundryDb(weekId, empId, newVal);
+        };
+
+        window.toggleLock = async (deptId) => {
+            const weekId = getWeekId(state.currentDate);
+            if (!state.lockedDepts[weekId]) state.lockedDepts[weekId] = {};
+            const newVal = !state.lockedDepts[weekId][deptId];
+            state.lockedDepts[weekId][deptId] = newVal;
+            updateUI();
+            await updateLockDb(weekId, deptId, newVal);
+        };
+
+        window.handleManageClick = () => {
+            if (state.manageMode) { state.manageMode = false; updateUI(); }
+            else { document.getElementById('pinPadModal').classList.replace('hidden', 'flex'); state.pinInput = ""; updatePinDots(); }
+        };
+
+        // --- PIN PAD ---
+        const updatePinDots = () => {
+            const dots = document.getElementById('pinDots').children;
+            for(let i=0; i<4; i++) dots[i].className = `w-3.5 h-3.5 rounded-full pin-dot ${state.pinInput.length > i ? 'bg-blue-600 scale-110 shadow-lg' : 'bg-slate-200'}`;
+        };
+
+        const setupNumpad = () => {
+            const pad = document.getElementById('numpad');
+            if (!pad) return;
+            [1,2,3,4,5,6,7,8,9,'X',0,'<'].forEach(k => {
+                const btn = document.createElement('button');
+                btn.className = "h-14 bg-slate-50 border border-slate-100 rounded-2xl font-black text-lg active:bg-blue-600 active:text-white transition-all";
+                btn.innerHTML = k === 'X' ? '<i data-lucide="x" class="mx-auto"></i>' : k === '<' ? '<i data-lucide="delete" class="mx-auto"></i>' : k;
+                btn.onclick = () => {
+                    if (k === 'X') document.getElementById('pinPadModal').classList.replace('flex', 'hidden');
+                    else if (k === '<') { state.pinInput = state.pinInput.slice(0, -1); updatePinDots(); }
+                    else if (typeof k === 'number') {
+                        state.pinInput += k; updatePinDots();
+                        if (state.pinInput.length === 4) {
+                            if (state.pinInput === CORRECT_PIN) {
+                                state.manageMode = true; state.view = 'laundry';
+                                document.getElementById('pinPadModal').classList.replace('flex', 'hidden');
+                                updateUI();
+                            } else {
+                                state.pinInput = ""; updatePinDots();
+                            }
+                        }
+                    }
+                    lucide.createIcons();
+                };
+                pad.appendChild(btn);
+            });
+        };
+
+        window.onload = () => { setupNumpad(); fetchData(); };
+    </script>
+</body>
+</html>
